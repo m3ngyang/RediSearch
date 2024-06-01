@@ -785,45 +785,59 @@ static int AliasUpdateCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int
   }
 }
 
-int ConfigCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+int ConfigSetCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
   // Not bound to a specific index, so...
   QueryError status = {0};
 
-  // CONFIG <GET|SET> <NAME> [value]
+  // CONFIG SET <NAME> [value]
   if (argc < 3) {
     return RedisModule_WrongArity(ctx);
   }
 
   RedisModule_Reply _reply = RedisModule_NewReply(ctx), *reply = &_reply;
 
-  const char *action = RedisModule_StringPtrLen(argv[1], NULL);
   const char *name = RedisModule_StringPtrLen(argv[2], NULL);
-  if (!strcasecmp(action, "GET")) {
-    RSConfig_DumpProto(&RSGlobalConfig, &RSGlobalConfigOptions, name, reply, false);
-  } else if (!strcasecmp(action, "HELP")) {
-    RSConfig_DumpProto(&RSGlobalConfig, &RSGlobalConfigOptions, name, reply, true);
-  } else if (!strcasecmp(action, "SET")) {
-    size_t offset = 3;  // Might be == argc. SetOption deals with it.
-    int rc = RSConfig_SetOption(&RSGlobalConfig, &RSGlobalConfigOptions, name, argv, argc,
-                                &offset, &status);
-    if (rc == REDISMODULE_ERR) {
-      RedisModule_Reply_QueryError(reply, &status);
-      QueryError_ClearError(&status);
-      RedisModule_EndReply(reply);
-      return REDISMODULE_OK;
-    }
+  size_t offset = 3;  // Might be == argc. SetOption deals with it.
+  int rc = RSConfig_SetOption(&RSGlobalConfig, &RSGlobalConfigOptions, name, argv, argc,
+                              &offset, &status);
+  if (rc == REDISMODULE_ERR) {
+    RedisModule_Reply_QueryError(reply, &status);
+    QueryError_ClearError(&status);
+  } else {
+    RedisModule_Log(ctx, "notice", "Successfully changed configuration for `%s`", name);
     if (offset != argc) {
       RedisModule_Reply_SimpleString(reply, "EXCESSARGS");
     } else {
-      RedisModule_Log(ctx, "notice", "Successfully changed configuration for `%s`", name);
       RedisModule_Reply_SimpleString(reply, "OK");
     }
-  } else {
-    RedisModule_Reply_SimpleString(reply, "No such configuration action");
   }
 
-  RedisModule_EndReply(reply);
-  return REDISMODULE_OK;
+  return RedisModule_EndReply(reply);
+}
+
+static int ConfigGetOrHelpCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc, bool isHelp) {
+  // Not bound to a specific index, so...
+  QueryError status = {0};
+
+  // CONFIG <GET|HELP> <NAME>
+  if (argc != 3) {
+    return RedisModule_WrongArity(ctx);
+  }
+
+  RedisModule_Reply _reply = RedisModule_NewReply(ctx), *reply = &_reply;
+
+  const char *name = RedisModule_StringPtrLen(argv[2], NULL);
+  RSConfig_DumpProto(&RSGlobalConfig, &RSGlobalConfigOptions, name, reply, isHelp);
+
+  return RedisModule_EndReply(reply);
+}
+
+int ConfigGetCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+  return ConfigGetOrHelpCommand(ctx, argv, argc, false);
+}
+
+int ConfigHelpCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+  return ConfigGetOrHelpCommand(ctx, argv, argc, true);
 }
 
 int IndexList(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
@@ -1106,7 +1120,11 @@ int RediSearch_InitModuleInternal(RedisModuleCtx *ctx, RedisModuleString **argv,
 
   RM_TRY(RedisModule_CreateCommand, ctx, RS_DICT_DUMP, DictDumpCommand, "readonly", 0, 0, 0);
 
-  RM_TRY(RedisModule_CreateCommand, ctx, RS_CONFIG, ConfigCommand, "readonly", 0, 0, 0);
+  RM_TRY(RedisModule_CreateCommand, ctx, RS_CONFIG, NULL, "readonly", 0, 0, 0);
+  RedisModuleCommand *configCmd = RedisModule_GetCommand(ctx, RS_CONFIG);
+  RM_TRY(RedisModule_CreateSubcommand, configCmd, "SET", ConfigSetCommand, "readonly", 0, 0, 0);
+  RM_TRY(RedisModule_CreateSubcommand, configCmd, "GET", ConfigGetCommand, "readonly", 0, 0, 0);
+  RM_TRY(RedisModule_CreateSubcommand, configCmd, "HELP", ConfigHelpCommand, "readonly", 0, 0, 0);
 
 // alias is a special case, we can not use the INDEX_ONLY_CMD_ARGS/INDEX_DOC_CMD_ARGS macros
 #ifndef RS_COORDINATOR
